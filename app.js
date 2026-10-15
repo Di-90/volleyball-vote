@@ -527,14 +527,14 @@ async function pollPage(id) {
     for (const [k, u] of upItems.entries()) {
       try {
         setItem(u, '压缩中 0%', 0);
-        const { blob, noAudio } = await up.compress(u.file, p => setItem(u, `压缩中 ${Math.round(p * 100)}%`, Math.round(p * 80)));
+        const { blob, noAudio, skipped } = await up.compress(u.file, p => setItem(u, `压缩中 ${Math.round(p * 100)}%`, Math.round(p * 80)));
         if (blob.size > 90 * 1048576) throw new Error('压缩后仍超过 90 MB，请先剪短');
         const cover = await up.poster(blob).catch(() => null);
         const base = `videos/${id}/${stamp}${String(k + 1).padStart(2, '0')}`;
         files.push({ path: base + '.mp4', blob });
         if (cover) files.push({ path: base + '.jpg', blob: cover });
         added.push({ title: titleOf(u.file.name), src: base + '.mp4', poster: cover ? base + '.jpg' : '', size: blob.size, from: poll.title });
-        setItem(u, `压缩完成 ${(u.file.size / 1048576).toFixed(0)}→${(blob.size / 1048576).toFixed(1)} MB${noAudio ? '（无声音）' : ''}`, 80);
+        setItem(u, `${skipped ? '已符合要求，跳过压缩' : '压缩完成'} ${(u.file.size / 1048576).toFixed(0)}→${(blob.size / 1048576).toFixed(1)} MB${noAudio ? '（无声音）' : ''}`, 80);
       } catch (e) { u.error = true; setItem(u, '失败：' + e.message, 100); }
     }
     const ok = upItems.filter(u => !u.error);
@@ -736,7 +736,6 @@ async function votePage(id) {
   const seen = poll.deviceSeen ? '<div class="notice" style="margin-bottom:20px">⚠️ 检测到这台设备在本投票中已有投票记录。每人限投一次，重复投票会被标记，组织者可能将其作废。如果是和别人共用设备，可以忽略本提示。</div>' : '';
   $app.innerHTML = head + seen + `<div class="video-grid">${poll.videos.map((v, i) => `
     <div class="card vcard selectable" data-id="${v.id}">
-      <div class="pick" title="选择"></div>
       <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
       <div class="meta"><span class="no">${i + 1}</span><span class="title">${esc(v.title)}</span></div>
       <button class="btn select-btn">选择这个</button>
@@ -750,7 +749,6 @@ async function votePage(id) {
       const k = picked.indexOf(c.dataset.id);
       c.classList.toggle('selected', k >= 0);
       c.classList.toggle('dim', k < 0 && picked.length >= poll.maxChoices);
-      c.querySelector('.pick').textContent = k >= 0 ? k + 1 : '';
       c.querySelector('.select-btn').textContent = k >= 0 ? `✓ 已选（第 ${k + 1} 个）` : '选择这个';
     });
     document.getElementById('cnt').textContent = picked.length;
