@@ -206,6 +206,37 @@ function download(blob, name) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
+// 二维码海报（宣传横幅 + 标题 + 二维码 + 规则），与 tools/make_qr.py 同版式
+const loadScript = src => new Promise((ok, bad) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => bad(new Error('二维码组件加载失败')); document.head.appendChild(s); });
+const loadImage = src => new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => bad(new Error('宣传图加载失败')); i.src = src; });
+async function qrPoster(poll, link) {
+  if (!window.qrcode) await loadScript('vendor/qrcode.js');
+  const qr = qrcode(0, 'M'); qr.addData(link); qr.make();
+  const banner = await loadImage('banner.jpg');
+  const W = 1080, bh = Math.round(banner.height * W / banner.width), qs = 620, font = '"Microsoft YaHei","PingFang SC",sans-serif';
+  const lines = [poll.minChoices === poll.maxChoices ? `请选出 ${poll.maxChoices} 个最喜欢的视频` : `每人最多选 ${poll.maxChoices} 个最喜欢的视频`];
+  if (poll.cutoff) { const d = new Date(poll.cutoff); lines.push(`${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 评选截止${poll.cutoffNote ? ' · ' + poll.cutoffNote : ''}`); }
+  const c = document.createElement('canvas'); c.width = W; c.height = bh + 1080;
+  const g = c.getContext('2d');
+  g.fillStyle = '#f6f7fb'; g.fillRect(0, 0, W, c.height);
+  g.drawImage(banner, 0, 0, W, bh);
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  let y = bh + 60;
+  g.fillStyle = '#161a2e'; g.font = `bold 58px ${font}`; g.fillText(poll.title, W / 2, y, W - 80);
+  y += 130;
+  const pad0 = 36, x0 = (W - qs) / 2;
+  g.fillStyle = '#fff'; g.strokeStyle = '#e2e6f0'; g.lineWidth = 2;
+  g.beginPath(); g.roundRect(x0 - pad0, y - pad0, qs + pad0 * 2, qs + pad0 * 2, 36); g.fill(); g.stroke();
+  const n = qr.getModuleCount(), cell = qs / (n + 4);
+  g.fillStyle = '#161a2e';
+  for (let r = 0; r < n; r++) for (let col = 0; col < n; col++) if (qr.isDark(r, col)) g.fillRect(Math.floor(x0 + (col + 2) * cell), Math.floor(y + (r + 2) * cell), Math.ceil(cell), Math.ceil(cell));
+  y += qs + pad0 + 50;
+  g.fillStyle = '#1f5fd6'; g.font = `bold 44px ${font}`; g.fillText('微信或手机相机扫码参与投票', W / 2, y);
+  y += 80;
+  g.fillStyle = '#6e748c'; g.font = `32px ${font}`;
+  for (const l of lines) { g.fillText(l, W / 2, y, W - 80); y += 52; }
+  return await new Promise(ok => c.toBlob(ok, 'image/png'));
+}
 async function exportPoll(id, format, scope) {
   const { poll, ballots: all } = await api('admin.ballots', { id });
   const stamp = fmtFull(Date.now()).replace(/[-: ]/g, '').slice(0, 12);
@@ -273,7 +304,7 @@ function loginPage() {
 async function dashboard() {
   const polls = await api('admin.list');
   $app.innerHTML = `<div class="spread" style="margin-bottom:24px"><div><h1>我的投票</h1><p class="muted">共 ${polls.length} 个投票</p></div>
-    <button class="btn primary" id="new">＋ 新建投票</button></div>
+    <div class="row"><button class="btn" id="speed">📶 上传测速</button><button class="btn primary" id="new">＋ 新建投票</button></div></div>
     ${polls.length ? `<div class="poll-list">${polls.map(p => `
       <div class="card poll-item" data-id="${p.id}">
         <div class="spread">${badge(p.status)}<span class="muted">${fmt(p.createdAt)}</span></div>
@@ -286,6 +317,7 @@ async function dashboard() {
       </div>`).join('')}</div>`
       : `<div class="card empty"><div class="big">🗳️</div><p>还没有投票，点击右上角新建一个吧</p></div>`}`;
   document.getElementById('new').onclick = newPollModal;
+  document.getElementById('speed').onclick = speedModal;
   $app.querySelectorAll('.poll-item').forEach(el => el.onclick = () => location.hash = `#/admin/${el.dataset.id}`);
 }
 
@@ -326,6 +358,29 @@ const readForm = f => ({
   cutoff: f.cutoff.value ? new Date(f.cutoff.value).toISOString() : null,
   cutoffNote: f.cutoffNote.value,
 });
+
+// 测这台电脑在当前网络下往 GitHub 上传的速度，判断能否在网页里上传视频
+function speedModal() {
+  modal(`<h2>📶 上传测速</h2><p class="sub">测试这台电脑在当前网络下往 GitHub 上传视频的速度（会上传 1 MB 随机数据，不影响网站）。约需几秒到一分钟。</p>
+    <div id="spres" class="notice" style="margin-top:16px">测试中…</div>
+    <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="btn" data-close>关闭</button></div>`, async m => {
+    const out = m.querySelector('#spres');
+    const say = html => { if (document.body.contains(out)) out.innerHTML = html; };
+    try {
+      const up = await import('./uploader.js');
+      const enc = up.supported();
+      const cfg = await api('admin.ghConfig');
+      const r = await up.speedTest(cfg, 1);
+      // GitHub 单个请求约 60 秒上限，留余量按 45 秒算；视频按 base64 后体积 ×1.37
+      const maxMB = r.kbps * 45 / 1024 / 1.37;
+      const t10 = 10 * 1.37 * 1024 / r.kbps;
+      const level = maxMB >= 30 ? ['✅ 很好', '可以放心在网页里上传'] : maxMB >= 10 ? ['🙂 可用', '一般的精彩片段（1 分钟内）没问题，很长的视频可能失败'] : ['❌ 太慢', '不建议在这台电脑/这个网络下网页上传，请换网络，或用原电脑的脚本'];
+      say(`<b>${level[0]}</b>：上传速度约 <b>${r.kbps >= 1024 ? (r.kbps / 1024).toFixed(1) + ' MB/s' : Math.round(r.kbps) + ' KB/s'}</b><br>
+        压缩后一个 10 MB 的视频约需 <b>${t10 < 60 ? Math.ceil(t10) + ' 秒' : (t10 / 60).toFixed(1) + ' 分钟'}</b>；单个视频压缩后最大约可传 <b>${maxMB >= 100 ? '90' : maxMB.toFixed(1)} MB</b>（约 1 分钟 720p 视频为 5–10 MB）<br>
+        ${level[1]}。<br>${enc ? '✅ 这个浏览器支持网页内压缩视频' : '❌ 这个浏览器不支持网页内压缩视频，请用电脑上最新版 Chrome 或 Edge'}`);
+    } catch (e) { say('❌ 测速失败：' + esc(e.message)); }
+  });
+}
 
 function newPollModal() {
   const p = { title: '', description: '', maxChoices: 3, minChoices: 1, requireName: false, shuffle: true, showResults: 'after_close', deadline: null, cutoff: null, cutoffNote: '届时将选出当日最佳视频' };
@@ -370,7 +425,7 @@ async function pollPage(id) {
         </div>
       </div>
       ${poll.status !== 'draft' ? `<div class="share" style="margin-top:18px"><span>🔗 投票链接</span><code>${esc(link)}</code>
-        <button class="btn sm" id="copy">复制</button><a class="btn sm" href="${esc(link)}" target="_blank">打开</a></div>`
+        <button class="btn sm" id="copy">复制</button><button class="btn sm" id="qrbtn">🔳 二维码海报</button><a class="btn sm" href="${esc(link)}" target="_blank">打开</a></div>`
         : `<p class="muted" style="margin-top:14px">${n < 2 ? '📌 至少需要 2 个视频才能发布。' : `✅ 已有 ${n} 个视频，确认规则后即可发布。`}</p>`}`;
     const on = (sel, fn) => { const el = document.getElementById(sel); if (el) el.onclick = fn; };
     const setStatus = async status => { try { poll = await api('admin.status', { id, status }); renderAll(); toast('已更新'); } catch (e) { toast(e.message, true); } };
@@ -379,6 +434,15 @@ async function pollPage(id) {
     on('reopen', () => setStatus('open'));
     on('todraft', () => setStatus('draft'));
     on('copy', () => { navigator.clipboard.writeText(link).then(() => toast('链接已复制'), () => toast('复制失败，请手动复制', true)); });
+    on('qrbtn', async () => {
+      try {
+        const blob = await qrPoster(poll, link);
+        const url = URL.createObjectURL(blob), name = `投票二维码_${poll.title}.png`.replace(/[\\/:*?"<>|]/g, '_');
+        modal(`<h2>二维码海报</h2><img src="${url}" style="width:100%;max-height:62vh;object-fit:contain;border-radius:12px;border:1px solid var(--line)">
+          <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" data-close>关闭</button><button class="btn primary" id="dlqr">下载图片</button></div>`,
+          m => { m.querySelector('#dlqr').onclick = () => download(blob, name); });
+      } catch (e) { toast('生成失败：' + e.message, true); }
+    });
     on('del', async () => {
       if (!await confirmBox('删除投票', `将永久删除「${esc(poll.title)}」及其 ${poll.ballotCount || 0} 条投票记录，不可恢复。建议先导出数据。<br><span class="muted">（视频文件本身不会被删除）</span>`, '永久删除', true)) return;
       await api('admin.delete', { id }); toast('已删除'); location.hash = '#/admin';
@@ -402,7 +466,9 @@ async function pollPage(id) {
     document.getElementById('body').innerHTML = `
       <div class="card pad"><div class="spread"><h2>候选视频 <span class="muted" id="vcount">${poll.videos.length} 个</span></h2>
         ${!locked ? `<button class="btn sm" id="import">📂 从往期投票导入</button>` : ''}</div>
-        ${!locked && !poll.videos.length ? '<div class="notice" style="margin-bottom:16px">当天的视频由技术支持压缩上传后会自动出现在这里；总评投票可点击右上角「从往期投票导入」挑选前几天的视频。</div>' : ''}
+        ${!locked ? `<div class="slot" id="drop" style="aspect-ratio:auto;padding:26px;margin-bottom:16px"><div class="plus">＋</div><b>把视频拖到这里，或点击选择（可多选）</b>
+          <div class="muted">文件名就是视频标题（开头的序号会自动去掉）。视频会在这台电脑的浏览器里压缩成 720p 再上传，期间请不要关闭页面。<br>总评投票可点右上角「从往期投票导入」挑选前几天的视频。</div></div>
+          <div id="uplist" class="stack" style="margin-bottom:16px"></div><input type="file" id="vfile" accept="video/*,.mov,.mkv" multiple hidden>` : ''}
         <div class="video-grid" id="vgrid"></div></div>
       <div class="card pad"><h2>投票设置</h2><form id="sf" class="stack">${settingsForm(poll, locked)}
         <div class="row" style="justify-content:flex-end"><button class="btn primary">保存设置</button></div></form></div>`;
@@ -416,6 +482,84 @@ async function pollPage(id) {
     };
     const imp = document.getElementById('import');
     if (imp) imp.onclick = importModal;
+    const drop = document.getElementById('drop'), vfile = document.getElementById('vfile');
+    if (drop) {
+      drop.onclick = () => { if (!uploading) vfile.click(); };
+      drop.ondragover = e => { e.preventDefault(); drop.classList.add('drag'); };
+      drop.ondragleave = () => drop.classList.remove('drag');
+      drop.ondrop = e => { e.preventDefault(); drop.classList.remove('drag'); uploadVideos([...e.dataTransfer.files]); };
+      vfile.onchange = () => { uploadVideos([...vfile.files]); vfile.value = ''; };
+      renderUploads();
+    }
+  };
+
+  // ----- 网页上传：浏览器内压缩 → 一次提交到 GitHub → 挂到投票 -----
+  let uploading = false, upItems = [];
+  const titleOf = name => { const t = name.replace(/\.[^.]+$/, ''); return t.replace(/^\d+[\s._、-]+/, '').trim() || t; };
+  const renderUploads = () => {
+    const box = document.getElementById('uplist');
+    if (!box) return;
+    box.innerHTML = upItems.map(u => `<div class="row" style="gap:12px;flex-wrap:nowrap">
+      <span style="flex:0 0 38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.file.name)}">${esc(u.file.name)}</span>
+      <div class="progress" style="flex:1;width:auto"><i style="width:${u.pct}%;${u.error ? 'background:var(--bad)' : ''}"></i></div>
+      <span class="muted" style="flex:0 0 30%;font-size:13px;color:${u.error ? 'var(--bad)' : ''}">${esc(u.status)}</span></div>`).join('');
+  };
+  const setItem = (u, status, pct) => { u.status = status; if (pct != null) u.pct = pct; renderUploads(); };
+  const uploadVideos = async picked => {
+    if (uploading) return toast('正在上传，请等这一批完成', true);
+    const vids = picked.filter(f => /^video\//.test(f.type) || /\.(mp4|m4v|mov|webm|mkv)$/i.test(f.name));
+    if (!vids.length) return toast('没有找到视频文件', true);
+    if (vids.length < picked.length) toast('已忽略非视频文件', true);
+    let up;
+    try {
+      up = await import('./uploader.js');
+      if (!up.supported()) throw new Error('这个浏览器不支持网页内压缩视频，请用电脑上最新版的 Chrome 或 Edge');
+    } catch (e) { return toast(e.message.includes('uploader') ? '上传组件加载失败，请刷新重试' : e.message, true); }
+    let cfg;
+    try { cfg = await api('admin.ghConfig'); } catch (e) { return toast(e.message, true); }
+
+    uploading = true;
+    window.onbeforeunload = () => '视频正在上传，离开会中断';
+    upItems = vids.map(file => ({ file, status: '等待压缩', pct: 0 }));
+    renderUploads();
+    const stamp = Date.now().toString(36);
+    const files = [], added = [];
+    for (const [k, u] of upItems.entries()) {
+      try {
+        setItem(u, '压缩中 0%', 0);
+        const { blob, noAudio } = await up.compress(u.file, p => setItem(u, `压缩中 ${Math.round(p * 100)}%`, Math.round(p * 80)));
+        if (blob.size > 90 * 1048576) throw new Error('压缩后仍超过 90 MB，请先剪短');
+        const cover = await up.poster(blob).catch(() => null);
+        const base = `videos/${id}/${stamp}${String(k + 1).padStart(2, '0')}`;
+        files.push({ path: base + '.mp4', blob });
+        if (cover) files.push({ path: base + '.jpg', blob: cover });
+        added.push({ title: titleOf(u.file.name), src: base + '.mp4', poster: cover ? base + '.jpg' : '', size: blob.size, from: poll.title });
+        setItem(u, `压缩完成 ${(u.file.size / 1048576).toFixed(0)}→${(blob.size / 1048576).toFixed(1)} MB${noAudio ? '（无声音）' : ''}`, 80);
+      } catch (e) { u.error = true; setItem(u, '失败：' + e.message, 100); }
+    }
+    const ok = upItems.filter(u => !u.error);
+    try {
+      if (!added.length) throw new Error('没有压缩成功的视频');
+      await up.commitFiles(cfg, files, `网页上传：${poll.title}（${added.length} 个）`, step => ok.forEach(u => setItem(u, step, 90)));
+      poll = await api('admin.addVideos', { id, videos: added });
+      ok.forEach(u => setItem(u, '已上传，等待 GitHub 生效…', 95));
+      renderHead(); renderVideos();
+      // GitHub Pages 构建通常 1–2 分钟，轮询第一个视频确认可访问
+      const probe = added[0].src;
+      for (let t = 0; t < 40 && !/^(localhost|127.)/.test(location.hostname); t++) {
+        const r = await fetch(probe, { method: 'HEAD', cache: 'no-store' }).catch(() => null);
+        if (r && r.ok) break;
+        await new Promise(r => setTimeout(r, 8000));
+      }
+      ok.forEach(u => setItem(u, '✅ 完成，可以播放了', 100));
+      toast(`已上传 ${added.length} 个视频`);
+    } catch (e) {
+      ok.forEach(u => { u.error = true; setItem(u, '失败：' + e.message, 100); });
+      toast(e.message, true);
+    } finally {
+      uploading = false;
+      window.onbeforeunload = null;
+    }
   };
   const renderVideos = () => {
     const grid = document.getElementById('vgrid');
