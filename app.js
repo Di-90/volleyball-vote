@@ -238,12 +238,14 @@ async function router() {
 }
 window.addEventListener('hashchange', router);
 
+const BANNER = '<img class="banner" src="banner.jpg" alt="北京信息科技大学2026年“排绽风采，聚力同行”教职工气排球团体赛">';
 function homePage(admin) {
-  $app.innerHTML = `<section class="hero">
-    <h1>🏐 精彩视频评选</h1>
-    <p>请通过组织者发布的投票链接参与投票</p>
-    ${admin ? '<a class="btn lg" href="#/admin">进入管理后台 →</a>' : '<a class="btn lg" href="#/admin">管理员登录</a>'}
-  </section>`;
+  $app.innerHTML = `${BANNER}
+  <div class="card pad" style="text-align:center">
+    <h2 style="margin:0 0 8px">🏐 精彩视频评选</h2>
+    <p class="muted" style="margin:0 0 18px">请通过组织者发布的投票链接参与投票</p>
+    ${admin ? '<a class="btn primary" href="#/admin">进入管理后台 →</a>' : '<a class="btn" href="#/admin">管理员登录</a>'}
+  </div>`;
 }
 
 function loginPage() {
@@ -543,7 +545,7 @@ async function votePage(id) {
   catch (e) { $app.innerHTML = `<div class="card empty"><div class="big">🔍</div>${esc(e.message)}</div>`; return; }
   document.title = poll.title;
   const rule = poll.minChoices === poll.maxChoices ? `请选出 <b>${poll.maxChoices}</b> 个你最喜欢的视频` : `请选出 <b>${poll.minChoices}–${poll.maxChoices}</b> 个你最喜欢的视频`;
-  const head = `<section class="vote-head"><h1>${esc(poll.title)}</h1>${poll.description ? `<p class="sub">${esc(poll.description)}</p>` : ''}
+  const head = BANNER + `<section class="vote-head"><h1>${esc(poll.title)}</h1>${poll.description ? `<p class="sub">${esc(poll.description)}</p>` : ''}
     <div class="row"><span class="rule">🗳️ ${rule}</span>${poll.deadline ? `<span class="rule">⏰ 截止 ${fmt(poll.deadline)}</span>` : ''}<span class="rule">🎬 共 ${poll.videos.length} 个候选</span></div></section>`;
   const byId = new Map(poll.videos.map(v => [v.id, v]));
   const results = poll.results ? `<div class="card pad" style="margin-top:24px"><h2>${poll.status === 'closed' ? '最终结果' : '实时结果'} <span class="muted">· ${poll.results.total} 人参与</span></h2>
