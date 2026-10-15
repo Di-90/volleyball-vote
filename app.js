@@ -132,16 +132,23 @@ function tallyBallots(poll, ballots) {
   return { total, rows };
 }
 
+// 统计口径：all = 全部选票；cutoff = 只算第一截止时间之前投出的选票
+const inScope = (poll, scope) => b => scope !== 'cutoff' || !poll.cutoff || b.createdAt <= poll.cutoff;
+const scopeLabel = (poll, scope) => scope === 'cutoff' && poll.cutoff ? `截至第一截止 ${fmt(poll.cutoff)}` : '全部选票';
+
 // ---------- 导出（浏览器端生成 xlsx / csv / json） ----------
-function exportTables(poll, ballots) {
+function exportTables(poll, allBallots, scope) {
+  markDuplicates(allBallots);
+  const ballots = allBallots.filter(inScope(poll, scope));
   const { total, rows } = tallyBallots(poll, ballots);
-  const dupCount = markDuplicates(ballots);
+  const dupCount = ballots.filter(b => b.dup).length;
   const label = (v, i) => `V${i + 1} ${v.title}`;
   const vlabel = new Map(poll.videos.map((v, i) => [v.id, label(v, i)]));
   const info = [['项目', '内容'], ['投票标题', poll.title], ['投票说明', poll.description || ''], ['状态', STATUS[poll.status]],
     ['视频数量', poll.videos.length], ['每人最多可选', poll.maxChoices], ['每人最少需选', poll.minChoices], ['需要实名', poll.requireName ? '是' : '否'],
     ['随机顺序', poll.shuffle ? '是' : '否'], ['结果公开方式', SHOW_CN[poll.showResults]], ['创建时间', fmtFull(poll.createdAt)], ['开始时间', fmtFull(poll.openedAt)],
-    ['结束时间', fmtFull(poll.closedAt)], ['截止时间', fmtFull(poll.deadline)], ['总投票人数', total], ['总选票数', ballots.reduce((s, b) => s + b.choices.length, 0)], ['疑似重复选票数', dupCount], ['说明', '疑似重复=与更早的选票设备特征和网络相同；同型号手机在同一网络下可能误判，统计已包含这些选票'], ['导出时间', fmtFull(Date.now())]];
+    ['结束时间', fmtFull(poll.closedAt)], ['第一截止（评选统计）', fmtFull(poll.cutoff)], ['第一截止说明', poll.cutoffNote || ''], ['结束投票时间（不对投票者显示）', fmtFull(poll.deadline)],
+    ['本表统计范围', scopeLabel(poll, scope) + (scope === 'cutoff' && poll.cutoff ? '（之后投出的选票不计入）' : '')], ['总投票人数', total], ['总选票数', ballots.reduce((s, b) => s + b.choices.length, 0)], ['疑似重复选票数', dupCount], ['说明', '疑似重复=与更早的选票设备特征和网络相同；同型号手机在同一网络下可能误判，统计已包含这些选票'], ['导出时间', fmtFull(Date.now())]];
   const summary = [['排名', '视频编号', '视频标题', '来源', '得票数', '得票率(占投票人数)']]
     .concat(rows.map(r => [r.rank, `V${r.no}`, r.title, r.from || '', r.votes, total ? Math.round(r.pct * 10000) / 100 + '%' : '0%']));
   const detail = [['序号', '投票人', '投票时间', 'IP', '设备组', '疑似重复', '选择数', '所选视频', ...poll.videos.map(label)]]
@@ -199,13 +206,14 @@ function download(blob, name) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
-async function exportPoll(id, format) {
-  const { poll, ballots } = await api('admin.ballots', { id });
+async function exportPoll(id, format, scope) {
+  const { poll, ballots: all } = await api('admin.ballots', { id });
   const stamp = fmtFull(Date.now()).replace(/[-: ]/g, '').slice(0, 12);
-  const base = `投票数据_${poll.title}_${stamp}`.replace(/[\\/:*?"<>|]/g, '_');
-  const t = exportTables(poll, ballots);
+  const base = `投票数据_${poll.title}${scope === 'cutoff' && poll.cutoff ? '_截至第一截止' : ''}_${stamp}`.replace(/[\\/:*?"<>|]/g, '_');
+  const t = exportTables(poll, all, scope);
+  const ballots = all.filter(inScope(poll, scope));
   if (format === 'json') {
-    download(new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), poll, results: tallyBallots(poll, ballots), ballots }, null, 2)], { type: 'application/json' }), base + '.json');
+    download(new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), scope: scopeLabel(poll, scope), poll, results: tallyBallots(poll, ballots), ballots }, null, 2)], { type: 'application/json' }), base + '.json');
   } else if (format === 'csv') {
     const cell = v => { const s = String(v ?? ''); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     download(new Blob(['﻿' + t.detail.map(r => r.map(cell).join(',')).join('\r\n')], { type: 'text/csv' }), base + '_明细.csv');
@@ -290,7 +298,11 @@ function settingsForm(p, locked) {
     <div class="grid2">
       <div class="field"><label>每人最多选择</label>${stepper('maxChoices', p.maxChoices, 1, 100, dis)}<span class="hint">选出最喜欢的几个</span></div>
       <div class="field"><label>每人最少选择</label>${stepper('minChoices', p.minChoices, 1, 100, dis)}<span class="hint">与最多相同则必须选满</span></div>
-      <div class="field"><label>截止时间（选填）</label><input class="input" type="datetime-local" name="deadline" value="${toLocalInput(p.deadline)}"><span class="hint">到时自动结束</span></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>第一截止：评选统计时间（选填）</label><input class="input" type="datetime-local" name="cutoff" value="${toLocalInput(p.cutoff)}"><span class="hint">投票页会显示；到点后投票不停，后台可导出“截至此时”的数据</span></div>
+      <div class="field"><label>第一截止的说明（投票页显示）</label><input class="input" name="cutoffNote" maxlength="100" value="${esc(p.cutoffNote ?? '')}" placeholder="例如：届时将选出当日最佳视频"></div>
+      <div class="field"><label>第二截止：结束投票时间（选填）</label><input class="input" type="datetime-local" name="deadline" value="${toLocalInput(p.deadline)}"><span class="hint">🙈 不在投票页显示；到点自动关闭投票</span></div>
     </div>
     <div class="grid2">
       <label class="switch"><input type="checkbox" name="requireName" ${p.requireName ? 'checked' : ''} ${dis}><span class="track"></span>投票需填写姓名（同名只能投一次）</label>
@@ -311,10 +323,12 @@ const readForm = f => ({
   title: f.title.value, description: f.description.value, maxChoices: +f.maxChoices.value, minChoices: +f.minChoices.value,
   requireName: f.requireName.checked, shuffle: f.shuffle.checked, showResults: f.showResults.value,
   deadline: f.deadline.value ? new Date(f.deadline.value).toISOString() : null,
+  cutoff: f.cutoff.value ? new Date(f.cutoff.value).toISOString() : null,
+  cutoffNote: f.cutoffNote.value,
 });
 
 function newPollModal() {
-  const p = { title: '', description: '', maxChoices: 3, minChoices: 1, requireName: false, shuffle: true, showResults: 'after_close', deadline: null };
+  const p = { title: '', description: '', maxChoices: 3, minChoices: 1, requireName: false, shuffle: true, showResults: 'after_close', deadline: null, cutoff: null, cutoffNote: '届时将选出当日最佳视频' };
   modal(`<h2>新建投票</h2><form id="nf" class="stack">${settingsForm(p)}
     <div class="row" style="justify-content:flex-end"><button type="button" class="btn" data-close>取消</button><button class="btn primary">创建</button></div></form>`,
     (m, close) => {
@@ -329,11 +343,14 @@ function newPollModal() {
 }
 
 // ---------- 管理后台：投票详情 ----------
-let currentTab = 'setup', lastPollId = null;
+let currentTab = 'setup', lastPollId = null, scope = 'all';
 
 async function pollPage(id) {
   let poll = await api('admin.get', { id });
-  if (lastPollId !== id) currentTab = poll.status !== 'draft' && poll.ballotCount ? 'results' : 'setup';
+  if (lastPollId !== id) {
+    currentTab = poll.status !== 'draft' && poll.ballotCount ? 'results' : 'setup';
+    scope = poll.cutoff && Date.now() > Date.parse(poll.cutoff) ? 'cutoff' : 'all';
+  }
   lastPollId = id;
   const link = `${location.origin}${location.pathname}#/p/${poll.id}`;
 
@@ -342,7 +359,7 @@ async function pollPage(id) {
     document.getElementById('head').innerHTML = `
       <a href="#/admin" class="muted">← 返回列表</a>
       <div class="spread" style="margin-top:10px">
-        <div><div class="row">${badge(poll.status)}<span class="muted">创建于 ${fmt(poll.createdAt)}${poll.deadline ? ` · 截止 ${fmt(poll.deadline)}` : ''}</span></div>
+        <div><div class="row">${badge(poll.status)}<span class="muted">创建于 ${fmt(poll.createdAt)}${poll.cutoff ? ` · 第一截止 ${fmt(poll.cutoff)}` : ''}${poll.deadline ? ` · 结束投票 ${fmt(poll.deadline)}` : ''}</span></div>
           <h1 style="margin-top:8px">${esc(poll.title)}</h1></div>
         <div class="row">
           ${poll.status === 'draft' ? `<button class="btn primary" id="publish" ${n < 2 ? 'disabled' : ''}>🚀 发布投票</button>` : ''}
@@ -357,7 +374,7 @@ async function pollPage(id) {
         : `<p class="muted" style="margin-top:14px">${n < 2 ? '📌 至少需要 2 个视频才能发布。' : `✅ 已有 ${n} 个视频，确认规则后即可发布。`}</p>`}`;
     const on = (sel, fn) => { const el = document.getElementById(sel); if (el) el.onclick = fn; };
     const setStatus = async status => { try { poll = await api('admin.status', { id, status }); renderAll(); toast('已更新'); } catch (e) { toast(e.message, true); } };
-    on('publish', async () => { if (await confirmBox('发布投票', `共 ${n} 个视频，每人最多选 ${poll.maxChoices} 个、最少 ${poll.minChoices} 个${poll.deadline ? `，${fmt(poll.deadline)} 截止` : '，未设截止时间'}。<br>发布后视频与选择规则将锁定。确定发布吗？`, '发布')) setStatus('open'); });
+    on('publish', async () => { if (await confirmBox('发布投票', `共 ${n} 个视频，每人最多选 ${poll.maxChoices} 个、最少 ${poll.minChoices} 个。<br>第一截止（评选统计）：${poll.cutoff ? fmt(poll.cutoff) + (poll.cutoffNote ? `，“${esc(poll.cutoffNote)}”` : '') : '未设置'}<br>结束投票：${poll.deadline ? fmt(poll.deadline) + '（不对投票者显示）' : '未设置，需手动结束'}<br>发布后视频与选择规则将锁定。确定发布吗？`, '发布')) setStatus('open'); });
     on('close', async () => { if (await confirmBox('结束投票', '结束后投票者将无法继续投票，之后仍可重新开启。', '结束投票')) setStatus('closed'); });
     on('reopen', () => setStatus('open'));
     on('todraft', () => setStatus('draft'));
@@ -475,16 +492,23 @@ async function pollPage(id) {
     try { data = await api('admin.ballots', { id }); } catch (e) { body.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
     if (currentTab !== tab || location.hash !== `#/admin/${id}`) return;
     poll = data.poll; renderHead(); renderTabs();
-    const ballots = data.ballots;
-    const dupCount = markDuplicates(ballots);
+    if (!poll.cutoff) scope = 'all';
+    markDuplicates(data.ballots);
+    const ballots = data.ballots.filter(inScope(poll, scope));
+    const afterCut = data.ballots.length - ballots.length;
+    const dupCount = ballots.filter(b => b.dup).length;
     const r = tallyBallots(poll, ballots);
+    const scopeBar = poll.cutoff ? `<div class="spread"><div class="tabs">
+        <button data-scope="cutoff" class="${scope === 'cutoff' ? 'on' : ''}">🏆 截至第一截止 ${fmt(poll.cutoff)}</button>
+        <button data-scope="all" class="${scope === 'all' ? 'on' : ''}">全部选票</button></div>
+      <span class="muted">${scope === 'cutoff' ? (Date.now() < Date.parse(poll.cutoff) ? '第一截止未到，目前与全部选票相同' : `第一截止后又投了 ${afterCut} 张，未计入`) : `共 ${ballots.length} 张`}</span></div>` : '';
     const dupNote = dupCount ? `<div class="notice">⚠️ 有 <b>${dupCount}</b> 张选票疑似来自已投过票的设备（同设备特征 + 同网络）。同型号手机在同一网络下也可能被误判，请到「投票记录」核查后决定是否作废。以下统计<b>包含</b>这些选票。</div>` : '';
     const totalPicks = ballots.reduce((s, b) => s + b.choices.length, 0);
     const vlabel = new Map(poll.videos.map((v, i) => [v.id, `V${i + 1} ${v.title}`]));
     const toolbar = `<div class="row"><button class="btn sm" id="refresh">↻ 刷新</button>
-      <button class="btn primary sm" data-exp="xlsx">📥 导出 Excel</button><button class="btn sm" data-exp="csv">CSV 明细</button><button class="btn sm" data-exp="json">JSON</button></div>`;
+      <button class="btn primary sm" data-exp="xlsx">📥 导出 Excel${scope === 'cutoff' ? '（截至第一截止）' : ''}</button><button class="btn sm" data-exp="csv">CSV 明细</button><button class="btn sm" data-exp="json">JSON</button></div>`;
     if (tab === 'results') {
-      body.innerHTML = dupNote + `
+      body.innerHTML = scopeBar + dupNote + `
         <div class="grid2">
           ${[['投票人数', r.total], ['总选票', totalPicks], ['候选视频', poll.videos.length], ['人均选择', r.total ? (totalPicks / r.total).toFixed(1) : '—']]
           .map(([k, v]) => `<div class="card pad"><div class="muted">${k}</div><div style="font-size:30px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums">${v}</div></div>`).join('')}
@@ -495,7 +519,7 @@ async function pollPage(id) {
         </div>`;
     } else {
       const list = [...ballots].reverse();
-      body.innerHTML = dupNote + `<div class="card pad"><div class="spread" style="margin-bottom:16px"><h2 style="margin:0">投票记录</h2>${toolbar}</div>
+      body.innerHTML = scopeBar + dupNote + `<div class="card pad"><div class="spread" style="margin-bottom:16px"><h2 style="margin:0">投票记录</h2>${toolbar}</div>
         ${dupCount ? `<div class="row" style="margin-bottom:14px"><button class="btn sm danger" id="voidDups">作废全部疑似重复票（${dupCount} 张，每组保留最早一张）</button>
           <label class="switch" style="font-size:13px"><input type="checkbox" id="onlyDup"><span class="track"></span>只看疑似重复</label></div>` : ''}
         ${list.length ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>投票人</th><th>时间</th><th>所选视频</th><th>IP</th><th></th></tr></thead><tbody>
@@ -520,9 +544,10 @@ async function pollPage(id) {
       });
     }
     document.getElementById('refresh').onclick = renderData;
+    body.querySelectorAll('[data-scope]').forEach(b => b.onclick = () => { scope = b.dataset.scope; renderData(); });
     body.querySelectorAll('[data-exp]').forEach(b => b.onclick = async () => {
       b.disabled = true;
-      try { await exportPoll(id, b.dataset.exp); } catch (e) { toast(e.message, true); }
+      try { await exportPoll(id, b.dataset.exp, scope); } catch (e) { toast(e.message, true); }
       b.disabled = false;
     });
     // 仅进行中、页面可见时每 30 秒刷新（避免后台长时间挂着消耗资源点）
@@ -546,7 +571,7 @@ async function votePage(id) {
   document.title = poll.title;
   const rule = poll.minChoices === poll.maxChoices ? `请选出 <b>${poll.maxChoices}</b> 个你最喜欢的视频` : `请选出 <b>${poll.minChoices}–${poll.maxChoices}</b> 个你最喜欢的视频`;
   const head = BANNER + `<section class="vote-head"><h1>${esc(poll.title)}</h1>${poll.description ? `<p class="sub">${esc(poll.description)}</p>` : ''}
-    <div class="row"><span class="rule">🗳️ ${rule}</span>${poll.deadline ? `<span class="rule">⏰ 截止 ${fmt(poll.deadline)}</span>` : ''}<span class="rule">🎬 共 ${poll.videos.length} 个候选</span></div></section>`;
+    <div class="row"><span class="rule">🗳️ ${rule}</span>${poll.cutoff ? `<span class="rule">⏰ ${poll.cutoffPassed ? `评选已于 ${fmt(poll.cutoff)} 截止统计，仍可继续投票` : `${fmt(poll.cutoff)} 评选截止${poll.cutoffNote ? ' · ' + esc(poll.cutoffNote) : ''}`}</span>` : ''}<span class="rule">🎬 共 ${poll.videos.length} 个候选</span></div></section>`;
   const byId = new Map(poll.videos.map(v => [v.id, v]));
   const results = poll.results ? `<div class="card pad" style="margin-top:24px"><h2>${poll.status === 'closed' ? '最终结果' : '实时结果'} <span class="muted">· ${poll.results.total} 人参与</span></h2>
     ${poll.results.total ? barChart(poll.results.rows, poll.results.total) : '<p class="muted">暂无投票</p>'}</div>` : '';
