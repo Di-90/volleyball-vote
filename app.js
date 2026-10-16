@@ -100,6 +100,54 @@ function confirmBox(title, text, okText = '确定', danger) {
 // 同时只播放一个视频
 document.addEventListener('play', e => { document.querySelectorAll('video').forEach(v => { if (v !== e.target) v.pause(); }); }, true);
 
+// ---------- 背景音乐（仅投票页）：循环；看视频时暂停、看完接着放；手动关闭后永久不再响（记在本机） ----------
+const bgm = (() => {
+  const KEY = 'vv_bgm_off';
+  let audio = null, active = false, waiting = false;
+  const off = () => localStorage.getItem(KEY) === '1';
+  const videoPlaying = () => [...document.querySelectorAll('video')].some(v => !v.paused && !v.ended);
+  const btn = () => document.getElementById('bgmbtn');
+  const paint = () => {
+    const b = btn(); if (!b) return;
+    const on = audio && !audio.paused;
+    b.classList.toggle('on', !!on);
+    b.classList.toggle('muted', off());
+    b.title = off() ? '背景音乐已关闭，点击打开' : on ? '点击关闭背景音乐' : '点击播放背景音乐';
+  };
+  const play = () => {
+    if (!active || off() || videoPlaying()) return paint();
+    if (!audio) { audio = new Audio('bgm.mp3'); audio.loop = true; audio.volume = 0.45; audio.onplay = audio.onpause = paint; }
+    audio.play().catch(waitForGesture);
+  };
+  // 浏览器不许一进页面就出声：等用户第一次点击/滑动屏幕再开始
+  const gesture = e => {
+    if (e.target.closest && e.target.closest('#bgmbtn')) return; // 点开关本身交给开关处理
+    stopWaiting(); play();
+  };
+  const stopWaiting = () => { waiting = false; ['pointerdown', 'touchstart', 'keydown'].forEach(t => document.removeEventListener(t, gesture, true)); };
+  const waitForGesture = () => { if (waiting) return; waiting = true; ['pointerdown', 'touchstart', 'keydown'].forEach(t => document.addEventListener(t, gesture, true)); paint(); };
+  // 看视频时暂停，视频暂停/播完后接着放
+  document.addEventListener('play', e => { if (e.target.tagName === 'VIDEO' && audio) audio.pause(); }, true);
+  ['pause', 'ended'].forEach(t => document.addEventListener(t, e => { if (e.target.tagName === 'VIDEO') setTimeout(play, 300); }, true));
+  return {
+    start() {
+      active = true;
+      $nav.innerHTML = '<button id="bgmbtn" class="bgm-btn" aria-label="背景音乐开关"><span>♪</span></button>';
+      btn().onclick = () => {
+        if (off()) { localStorage.removeItem(KEY); stopWaiting(); play(); }
+        else if (audio && !audio.paused) { localStorage.setItem(KEY, '1'); audio.pause(); }
+        else { stopWaiting(); play(); }
+        paint();
+      };
+      play();
+      // 微信内置浏览器：借 WeixinJSBridge 实现进页面即自动播放
+      const wx = () => window.WeixinJSBridge.invoke('getNetworkType', {}, play);
+      if (window.WeixinJSBridge) wx(); else document.addEventListener('WeixinJSBridgeReady', wx, { once: true });
+    },
+    stop() { active = false; stopWaiting(); if (audio) audio.pause(); },
+  };
+})();
+
 // 单序列横向条形图：单色、细条、圆角数据端、悬停提示
 let $tip;
 function barChart(rows, total) {
@@ -262,7 +310,8 @@ async function router() {
   const parts = (location.hash.replace(/^#/, '') || '/').split('/').filter(Boolean);
   window.scrollTo(0, 0);
   try {
-    if (parts[0] === 'p' && parts[1]) { $nav.innerHTML = ''; return await votePage(parts[1]); }
+    if (parts[0] === 'p' && parts[1]) { bgm.start(); return await votePage(parts[1]); }
+    bgm.stop();
     const admin = !!auth.token;
     $nav.innerHTML = admin ? `<a class="btn ghost sm" href="#/admin">我的投票</a><button class="btn ghost sm" id="logout">退出</button>` : '';
     if (admin) document.getElementById('logout').onclick = () => { auth.token = ''; location.hash = '#/'; router(); };
