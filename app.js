@@ -319,7 +319,7 @@ async function router() {
       if (!admin) return loginPage();
       return parts[1] ? await pollPage(parts[1]) : await dashboard();
     }
-    homePage(admin);
+    await homePage(admin);
   } catch (e) {
     $app.innerHTML = `<div class="card empty"><div class="big">😕</div>${esc(e.message)}</div>`;
   }
@@ -327,13 +327,22 @@ async function router() {
 window.addEventListener('hashchange', router);
 
 const BANNER = '<img class="banner" src="banner.jpg" alt="北京信息科技大学2026年“排绽风采，聚力同行”教职工气排球团体赛">';
-function homePage(admin) {
-  $app.innerHTML = `${BANNER}
-  <div class="card pad" style="text-align:center">
-    <h2 style="margin:0 0 8px">🏐 精彩视频评选</h2>
-    <p class="muted" style="margin:0 0 18px">请通过组织者发布的投票链接参与投票</p>
-    ${admin ? '<a class="btn primary" href="#/admin">进入管理后台 →</a>' : '<a class="btn" href="#/admin">管理员登录</a>'}
-  </div>`;
+async function homePage(admin) {
+  const adminLink = admin ? '<a class="btn primary" href="#/admin">进入管理后台 →</a>' : '<a class="muted" href="#/admin">管理员登录</a>';
+  $app.innerHTML = `${BANNER}<div class="card empty">加载中…</div>`;
+  let polls = [];
+  try { polls = await api('list'); } catch (e) { $app.innerHTML = `${BANNER}<div class="card empty">${esc(e.message)}</div>`; return; }
+  $app.innerHTML = `${BANNER}<div class="home-list">
+  <h2 style="margin:4px 0 14px">🏐 精彩视频评选</h2>
+  ${polls.length ? `<div class="poll-list">${polls.map(p => `
+    <a class="card poll-item home-poll" href="#/p/${p.id}">
+      ${p.cover ? `<img class="home-cover" src="${esc(p.cover)}" alt="" loading="lazy">` : ''}
+      <div class="spread">${badge(p.status)}<span class="muted">${p.videoCount} 个视频</span></div>
+      <h3>${esc(p.title)}</h3>
+      <span class="btn ${p.status === 'open' ? 'primary' : ''}" style="align-self:flex-start">${p.status === 'open' ? '去投票 →' : '查看 →'}</span>
+    </a>`).join('')}</div>`
+    : `<div class="card empty"><div class="big">🗳️</div><p>评选还没开始，比赛期间每天晚上会发布当天的精彩视频评选，敬请期待。</p></div>`}
+  <div style="text-align:center;margin:28px 0 8px">${adminLink}</div></div>`;
 }
 
 function loginPage() {

@@ -235,3 +235,8 @@ tr:hover td { background: #fafbff; }
 .bgm-btn.muted { color: var(--muted); }
 .bgm-btn.muted::after { content: ""; position: absolute; width: 26px; height: 2px; background: var(--muted); transform: rotate(-45deg); border-radius: 2px; }
 @keyframes bgm-spin { to { transform: rotate(360deg); } }
+
+/* 首页投票通道 */
+.home-list { max-width: 800px; margin: 0 auto; }
+.home-poll { color: var(--ink); overflow: hidden; }
+.home-cover { width: calc(100% + 40px); margin: -20px -20px 0; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--radius) var(--radius) 0 0; background: #e9edf7; }
