@@ -478,7 +478,7 @@ async function pollPage(id) {
         : `<p class="muted" style="margin-top:14px">${n < 2 ? '📌 至少需要 2 个视频才能发布。' : `✅ 已有 ${n} 个视频，确认规则后即可发布。`}</p>`}`;
     const on = (sel, fn) => { const el = document.getElementById(sel); if (el) el.onclick = fn; };
     const setStatus = async status => { try { poll = await api('admin.status', { id, status }); renderAll(); toast('已更新'); } catch (e) { toast(e.message, true); } };
-    on('publish', async () => { if (await confirmBox('发布投票', `共 ${n} 个视频，每人最多选 ${poll.maxChoices} 个、最少 ${poll.minChoices} 个。<br>第一截止（评选统计）：${poll.cutoff ? fmt(poll.cutoff) + (poll.cutoffNote ? `，“${esc(poll.cutoffNote)}”` : '') : '未设置'}<br>结束投票：${poll.deadline ? fmt(poll.deadline) + '（不对投票者显示）' : '未设置，需手动结束'}<br>发布后视频与选择规则将锁定。确定发布吗？`, '发布')) setStatus('open'); });
+    on('publish', async () => { if (await confirmBox('发布投票', `共 ${n} 个视频，每人最多选 ${poll.maxChoices} 个、最少 ${poll.minChoices} 个。<br>第一截止（评选统计）：${poll.cutoff ? fmt(poll.cutoff) + (poll.cutoffNote ? `，“${esc(poll.cutoffNote)}”` : '') : '未设置'}<br>结束投票：${poll.deadline ? fmt(poll.deadline) + '（不对投票者显示）' : '未设置，需手动结束'}<br>⚠️ 如果有其他管理员在一起上传，请先确认大家都已上传完成。<br>发布后视频与选择规则将锁定，不能再添加视频。确定发布吗？`, '发布')) setStatus('open'); });
     on('close', async () => { if (await confirmBox('结束投票', '结束后投票者将无法继续投票，之后仍可重新开启。', '结束投票')) setStatus('closed'); });
     on('reopen', () => setStatus('open'));
     on('todraft', () => setStatus('draft'));
@@ -507,8 +507,28 @@ async function pollPage(id) {
 
   // ----- 设置与视频 -----
   const saveVideos = async videos => {
-    try { poll = await api('admin.setVideos', { id, videos }); renderHead(); renderVideos(); }
-    catch (e) { toast(e.message, true); renderVideos(); }
+    try { poll = await api('admin.setVideos', { id, videos, rev: poll.rev || 0 }); renderHead(); renderVideos(); return true; }
+    catch (e) {
+      toast(e.message, true);
+      if (e.status === 409) { try { poll = await api('admin.get', { id }); renderHead(); } catch (_) { } }
+      renderVideos(); return false;
+    }
+  };
+  // 多名管理员同时编辑草稿：每 20 秒检查一次，别人上传/改动后自动刷新视频列表（正在改标题时不打断）
+  const watchDraft = () => {
+    if (poll.status !== 'draft' || timer) return;
+    timer = setInterval(async () => {
+      if (document.hidden || currentTab !== 'setup' || location.hash !== `#/admin/${id}` || document.querySelector('.modal-bg')) return;
+      if (document.activeElement && document.activeElement.classList.contains('title-input')) return;
+      try {
+        const fresh = await api('admin.get', { id });
+        if ((fresh.rev || 0) !== (poll.rev || 0) || fresh.status !== poll.status) {
+          const n = fresh.videos.length - poll.videos.length;
+          poll = fresh; renderHead(); renderVideos();
+          if (n > 0) toast(`其他管理员新加了 ${n} 个视频`);
+        }
+      } catch (_) { }
+    }, 20000);
   };
   const renderSetup = () => {
     const locked = poll.status !== 'draft';
@@ -522,6 +542,7 @@ async function pollPage(id) {
       <div class="card pad"><h2>投票设置</h2><form id="sf" class="stack">${settingsForm(poll, locked)}
         <div class="row" style="justify-content:flex-end"><button class="btn primary">保存设置</button></div></form></div>`;
     renderVideos();
+    watchDraft();
     const f = document.getElementById('sf');
     bindSteppers(f);
     f.onsubmit = async e => {
@@ -595,12 +616,12 @@ async function pollPage(id) {
       renderHead(); renderVideos();
       // GitHub Pages 构建通常 1–2 分钟，轮询第一个视频确认可访问
       const probe = added[0].src;
-      for (let t = 0; t < 40 && !/^(localhost|127.)/.test(location.hostname); t++) {
+      let live = /^(localhost|127\.)/.test(location.hostname);
+      for (let t = 0; t < 40 && !live; t++) {
         const r = await fetch(probe, { method: 'HEAD', cache: 'no-store' }).catch(() => null);
-        if (r && r.ok) break;
-        await new Promise(r => setTimeout(r, 8000));
+        if (r && r.ok) live = true; else await new Promise(r => setTimeout(r, 8000));
       }
-      ok.forEach(u => setItem(u, '✅ 完成，可以播放了', 100));
+      ok.forEach(u => setItem(u, live ? '✅ 完成，可以播放了' : '✅ 已上传；网站还在更新，几分钟后刷新即可播放', 100));
       toast(`已上传 ${added.length} 个视频`);
     } catch (e) {
       ok.forEach(u => { u.error = true; setItem(u, '失败：' + e.message, 100); });
@@ -626,7 +647,7 @@ async function pollPage(id) {
       const i = +card.dataset.i;
       const ti = card.querySelector('.title-input');
       ti.onkeydown = e => { if (e.key === 'Enter') ti.blur(); };
-      ti.onchange = () => { const vs = poll.videos.map(v => ({ ...v })); vs[i].title = ti.value; saveVideos(vs).then(() => toast('标题已更新')); };
+      ti.onchange = () => { const vs = poll.videos.map(v => ({ ...v })); vs[i].title = ti.value; saveVideos(vs).then(ok => ok && toast('标题已更新')); };
       card.querySelectorAll('[data-move]').forEach(b => b.onclick = () => {
         const vs = [...poll.videos], j = i + +b.dataset.move;
         [vs[i], vs[j]] = [vs[j], vs[i]]; saveVideos(vs);
