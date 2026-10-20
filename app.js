@@ -794,20 +794,34 @@ async function votePage(id) {
   document.title = poll.title;
   const rule = poll.minChoices === poll.maxChoices ? `请选出 <b>${poll.maxChoices}</b> 个你最喜欢的视频` : `请选出 <b>${poll.minChoices}–${poll.maxChoices}</b> 个你最喜欢的视频`;
   const head = BANNER + `<section class="vote-head"><h1>${esc(poll.title)}</h1>${poll.description ? `<p class="sub">${esc(poll.description)}</p>` : ''}
-    <div class="row"><span class="rule">🗳️ ${rule}</span>${poll.cutoff ? `<span class="rule">⏰ ${poll.cutoffPassed ? `评选已于 ${fmt(poll.cutoff)} 截止统计，仍可继续投票` : `${fmt(poll.cutoff)} 评选截止${poll.cutoffNote ? ' · ' + esc(poll.cutoffNote) : ''}`}</span>` : ''}<span class="rule">🎬 共 ${poll.videos.length} 个候选</span></div></section>`;
+    <div class="row">${poll.status === 'closed' ? '<span class="rule">⏹ 投票已结束</span>'
+      : `<span class="rule">🗳️ ${rule}</span>${poll.cutoff ? `<span class="rule">⏰ ${poll.cutoffPassed ? `评选已于 ${fmt(poll.cutoff)} 截止统计，仍可继续投票` : `${fmt(poll.cutoff)} 评选截止${poll.cutoffNote ? ' · ' + esc(poll.cutoffNote) : ''}`}</span>` : ''}`}<span class="rule">🎬 共 ${poll.videos.length} 个候选</span></div></section>`;
   const byId = new Map(poll.videos.map(v => [v.id, v]));
-  const results = poll.results ? `<div class="card pad" style="margin-top:24px"><h2>${poll.status === 'closed' ? '最终结果' : '实时结果'} <span class="muted">· ${poll.results.total} 人参与</span></h2>
-    ${poll.results.total ? barChart(poll.results.rows, poll.results.total) : '<p class="muted">暂无投票</p>'}</div>` : '';
+  // 结果卡片：过了第一截止就是"评选结果"（只算截止前的票），并标出第一名
+  const R = poll.results;
+  const winners = R && R.total ? R.rows.filter(r => r.rank === 1 && r.votes > 0) : [];
+  const results = R ? `<div class="card pad" style="margin-top:24px"><h2>${R.cutoff ? '🏆 评选结果' : poll.status === 'closed' ? '最终结果' : '实时结果'} <span class="muted">· ${R.total} 人参与</span></h2>
+    ${R.cutoff ? `<p class="muted" style="margin:-8px 0 16px">按 ${fmt(R.cutoff)} 评选截止前的投票统计</p>` : ''}
+    ${winners.length ? `<div class="winner">🏆 最佳：${winners.map(w => esc(w.title)).join('、')}${winners.length > 1 ? '（并列）' : ''}<span>${winners[0].votes} 票</span></div>` : ''}
+    ${R.total ? barChart(R.rows, R.total) : '<p class="muted">暂无投票</p>'}</div>` : '';
+  // 已结束：按名次列出视频，可直接观看获奖作品
+  const ranked = R && R.total ? R.rows.map(r => ({ ...byId.get(r.id), rank: r.rank, votes: r.votes })).filter(v => v.src) : poll.videos;
+  const replay = `<h2 style="margin:30px 0 14px">${R && R.total ? '视频回看（按名次）' : '全部视频'}</h2><div class="video-grid">${ranked.map(v => `
+    <div class="card vcard">
+      <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
+      <div class="meta">${v.rank ? `<span class="no">${v.rank === 1 && v.votes ? '🏆 ' : ''}第 ${v.rank} 名</span>` : ''}<span class="title">${esc(v.title)}</span>${v.rank ? `<span class="muted">${v.votes} 票</span>` : ''}</div>
+    </div>`).join('')}</div>`;
 
+  if (poll.status === 'closed') {
+    const mine = poll.myBallot ? `你投了：${poll.myBallot.choices.map(c => esc(byId.get(c)?.title || c)).join('、')}。` : '';
+    $app.innerHTML = head + (mine || !R ? `<p class="muted" style="text-align:center">${mine}${R ? '' : '结果由组织者另行公布，感谢参与。'}</p>` : '') + results + replay;
+    return;
+  }
   if (poll.myBallot) {
     $app.innerHTML = head + `<div class="card done-card"><div class="big">🎉</div><h1>感谢参与！</h1>
       <p class="muted">${poll.myBallot.voterName ? esc(poll.myBallot.voterName) + ' · ' : ''}投票于 ${fmt(poll.myBallot.createdAt)}</p>
       <p style="margin-top:18px">你的选择：</p><div class="row" style="justify-content:center">${poll.myBallot.choices.map(c => `<span class="badge open">${esc(byId.get(c)?.title || c)}</span>`).join('')}</div>
       ${!poll.results && poll.status === 'open' ? '<p class="muted" style="margin-top:20px">结果将在投票结束后公布</p>' : ''}</div>` + results;
-    return;
-  }
-  if (poll.status === 'closed') {
-    $app.innerHTML = head + `<div class="card done-card"><div class="big">⏹</div><h1>投票已结束</h1><p class="muted">感谢关注${poll.results ? '' : '，结果由组织者另行公布'}</p></div>` + results;
     return;
   }
 
