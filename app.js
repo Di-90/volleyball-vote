@@ -353,7 +353,7 @@ function loginPage() {
   document.getElementById('f').onsubmit = async e => {
     e.preventDefault();
     const btn = e.target.querySelector('button'); btn.disabled = true;
-    try { auth.token = (await api('login', { password: e.target.pw.value })).token; router(); }
+    try { auth.token = (await api('login', { password: e.target.pw.value.trim() })).token; router(); }
     catch (err) { toast(err.message, true); btn.disabled = false; }
   };
 }
