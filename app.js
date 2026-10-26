@@ -4,6 +4,8 @@ const $nav = document.getElementById('nav');
 
 // ---------- 工具 ----------
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// 视频号链接（可选）：网站视频加载慢时可去微信视频号看同一段
+const wxLink = v => /^https:\/\//.test(v.wx || '') ? `<a class="wx-link" href="${esc(v.wx)}" target="_blank" rel="noopener">▶ 加载慢？去视频号观看</a>` : '';
 const STATUS = { draft: '草稿', open: '进行中', closed: '已结束' };
 const SHOW_CN = { never: '不公开', after_close: '结束后公开', always: '实时公开' };
 const badge = s => `<span class="badge ${s}">${STATUS[s]}</span>`;
@@ -528,7 +530,7 @@ async function pollPage(id) {
     if (poll.status !== 'draft' || timer) return;
     timer = setInterval(async () => {
       if (document.hidden || currentTab !== 'setup' || location.hash !== `#/admin/${id}` || document.querySelector('.modal-bg')) return;
-      if (document.activeElement && document.activeElement.classList.contains('title-input')) return;
+      if (document.activeElement && document.activeElement.matches('.title-input, .wx-input')) return;
       try {
         const fresh = await api('admin.get', { id });
         if ((fresh.rev || 0) !== (poll.rev || 0) || fresh.status !== poll.status) {
@@ -649,6 +651,7 @@ async function pollPage(id) {
       <div class="card vcard" data-i="${i}">
         <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
         <div class="meta"><span class="no">V${i + 1}</span><input class="title-input" value="${esc(v.title)}" maxlength="100" title="点击修改标题"></div>
+        <div class="wx-row"><span>视频号</span><input class="wx-input" value="${esc(v.wx || '')}" placeholder="粘贴视频号链接（可选）" title="在微信视频号里点「…」→「复制链接」后粘贴到这里"></div>
         <div class="tools"><span class="muted" style="margin-right:auto;padding-left:4px">${esc(v.from || '')}</span>
           ${!locked ? `<button class="btn ghost sm" data-move="-1" ${i === 0 ? 'disabled' : ''} title="前移">←</button><button class="btn ghost sm" data-move="1" ${i === poll.videos.length - 1 ? 'disabled' : ''} title="后移">→</button><button class="btn ghost sm danger" data-delv>移除</button>` : ''}</div>
       </div>`).join('');
@@ -657,6 +660,14 @@ async function pollPage(id) {
       const ti = card.querySelector('.title-input');
       ti.onkeydown = e => { if (e.key === 'Enter') ti.blur(); };
       ti.onchange = () => { const vs = poll.videos.map(v => ({ ...v })); vs[i].title = ti.value; saveVideos(vs).then(ok => ok && toast('标题已更新')); };
+      const wi = card.querySelector('.wx-input');
+      wi.onkeydown = e => { if (e.key === 'Enter') wi.blur(); };
+      wi.onchange = () => {
+        const url = (wi.value.match(/https:\/\/[^\s"'<>，。]+/) || [''])[0];
+        if (wi.value.trim() && !url) { wi.value = poll.videos[i].wx || ''; return toast('没有找到链接，请粘贴以 https:// 开头的视频号链接', true); }
+        const vs = poll.videos.map(v => ({ ...v })); vs[i].wx = wi.value = url;
+        saveVideos(vs).then(ok => ok && toast(url ? '视频号链接已保存' : '视频号链接已清除'));
+      };
       card.querySelectorAll('[data-move]').forEach(b => b.onclick = () => {
         const vs = [...poll.videos], j = i + +b.dataset.move;
         [vs[i], vs[j]] = [vs[j], vs[i]]; saveVideos(vs);
@@ -697,7 +708,7 @@ async function pollPage(id) {
         m.querySelector('#doImport').onclick = async () => {
           const picked = [...m.querySelectorAll('input[data-vid]:checked')].map(c => {
             const p = polls.find(x => x.id === c.dataset.poll), v = p.videos.find(x => x.id === c.dataset.vid);
-            return { title: v.title, src: v.src, poster: v.poster, size: v.size, from: p.title };
+            return { title: v.title, src: v.src, poster: v.poster, wx: v.wx || '', size: v.size, from: p.title };
           });
           if (!picked.length) return toast('请先勾选视频', true);
           try { poll = await api('admin.addVideos', { id, videos: picked }); close(); toast(`已导入 ${picked.length} 个视频`); renderHead(); renderVideos(); }
@@ -809,7 +820,7 @@ async function votePage(id) {
   const replay = `<h2 style="margin:30px 0 14px">${R && R.total ? '视频回看（按名次）' : '全部视频'}</h2><div class="video-grid">${ranked.map(v => `
     <div class="card vcard">
       <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
-      <div class="meta">${v.rank ? `<span class="no">${v.rank === 1 && v.votes ? '🏆 ' : ''}第 ${v.rank} 名</span>` : ''}<span class="title">${esc(v.title)}</span>${v.rank ? `<span class="muted">${v.votes} 票</span>` : ''}</div>
+      <div class="meta">${v.rank ? `<span class="no">${v.rank === 1 && v.votes ? '🏆 ' : ''}第 ${v.rank} 名</span>` : ''}<span class="title">${esc(v.title)}</span>${v.rank ? `<span class="muted">${v.votes} 票</span>` : ''}</div>${wxLink(v)}
     </div>`).join('')}</div>`;
 
   if (poll.status === 'closed') {
@@ -830,7 +841,7 @@ async function votePage(id) {
   $app.innerHTML = head + seen + `<div class="video-grid">${poll.videos.map((v, i) => `
     <div class="card vcard selectable" data-id="${v.id}">
       <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
-      <div class="meta"><span class="no">${i + 1}</span><span class="title">${esc(v.title)}</span></div>
+      <div class="meta"><span class="no">${i + 1}</span><span class="title">${esc(v.title)}</span></div>${wxLink(v)}
       <button class="btn select-btn">选择这个</button>
     </div>`).join('')}</div>${results}
     <div class="dock"><div class="count">已选 <b id="cnt">0</b> / ${poll.maxChoices}</div><div class="chips" id="chips"></div>
@@ -855,7 +866,7 @@ async function votePage(id) {
     else picked.push(vid);
     update();
   };
-  $app.querySelectorAll('.vcard').forEach(c => c.addEventListener('click', e => { if (!e.target.closest('video')) toggle(c.dataset.id); }));
+  $app.querySelectorAll('.vcard').forEach(c => c.addEventListener('click', e => { if (!e.target.closest('video, .wx-link')) toggle(c.dataset.id); }));
   document.getElementById('submit').onclick = async () => {
     const nameEl = document.getElementById('vname');
     const voterName = nameEl ? nameEl.value.trim() : '';

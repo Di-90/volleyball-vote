@@ -129,6 +129,12 @@ textarea.input { resize: vertical; min-height: 80px; }
 .vcard .title-input { flex: 1; border: 1px solid transparent; padding: 5px 8px; border-radius: 7px; font-weight: 600; outline: none; background: transparent; min-width: 0; }
 .vcard .title-input:hover { border-color: var(--line); }
 .vcard .title-input:focus { border-color: var(--accent); background: #fff; }
+.vcard .wx-row { display: flex; align-items: center; gap: 8px; padding: 0 16px 10px; font-size: 13px; color: var(--muted, #888); }
+.vcard .wx-row span { flex-shrink: 0; }
+.vcard .wx-input { flex: 1; min-width: 0; border: 1px solid var(--line); padding: 5px 8px; border-radius: 7px; font-size: 13px; outline: none; }
+.vcard .wx-input:focus { border-color: var(--accent); }
+.vcard .wx-link { display: inline-block; margin: -6px 16px 12px; font-size: 13px; color: #07a35a; text-decoration: none; align-self: flex-start; }
+.vcard .wx-link:hover { text-decoration: underline; }
 .vcard .tools { display: flex; gap: 4px; padding: 0 12px 12px; justify-content: flex-end; }
 .vcard.selectable { cursor: pointer; }
 .vcard.selectable:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
