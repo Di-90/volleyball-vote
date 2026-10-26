@@ -832,7 +832,13 @@ async function votePage(id) {
     $app.innerHTML = head + `<div class="card done-card"><div class="big">🎉</div><h1>感谢参与！</h1>
       <p class="muted">${poll.myBallot.voterName ? esc(poll.myBallot.voterName) + ' · ' : ''}投票于 ${fmt(poll.myBallot.createdAt)}</p>
       <p style="margin-top:18px">你的选择：</p><div class="row" style="justify-content:center">${poll.myBallot.choices.map(c => `<span class="badge open">${esc(byId.get(c)?.title || c)}</span>`).join('')}</div>
-      ${!poll.results && poll.status === 'open' ? '<p class="muted" style="margin-top:20px">结果将在投票结束后公布</p>' : ''}</div>` + results;
+      ${!poll.results && poll.status === 'open' ? '<p class="muted" style="margin-top:20px">结果将在投票结束后公布</p>' : ''}</div>` + results
+      // 投完票仍可观看全部视频（只是不能再投），自己投的标出来
+      + `<h2 style="margin:30px 0 14px">全部视频</h2><div class="video-grid">${poll.videos.map((v, i) => `
+    <div class="card vcard${poll.myBallot.choices.includes(v.id) ? ' voted' : ''}">
+      <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
+      <div class="meta"><span class="no">${i + 1}</span><span class="title">${esc(v.title)}</span>${poll.myBallot.choices.includes(v.id) ? '<span class="badge open">你投了</span>' : ''}</div>${wxLink(v)}
+    </div>`).join('')}</div>`;
     return;
   }
 

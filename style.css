@@ -137,6 +137,7 @@ textarea.input { resize: vertical; min-height: 80px; }
 .vcard .wx-link:hover { text-decoration: underline; }
 .vcard .tools { display: flex; gap: 4px; padding: 0 12px 12px; justify-content: flex-end; }
 .vcard.selectable { cursor: pointer; }
+.vcard.voted { border-color: var(--good); }
 .vcard.selectable:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
 .vcard.selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent), var(--shadow-lg); }
 .vcard.dim { opacity: .55; }
