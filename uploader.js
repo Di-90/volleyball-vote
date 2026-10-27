@@ -61,6 +61,33 @@ const toBase64 = blob => new Promise((ok, bad) => {
   r.readAsDataURL(blob);
 });
 
+// 国内云存储：切成 ≤3MB 的分段发给 media 云函数（它把分段存好再拼成完整文件），每段失败自动重试 3 次
+const CN_CHUNK = 3 * 1048576;
+export async function uploadCN(mediaUrl, token, path, blob, onProgress) {
+  const call = async body => {
+    const res = await fetch(mediaUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const e = new Error(data.error || `上传失败（${res.status}）`); e.status = res.status; throw e; }
+    return data;
+  };
+  const uploadId = [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const n = Math.max(1, Math.ceil(blob.size / CN_CHUNK));
+  for (let i = 0; i < n; i++) {
+    const data = await toBase64(blob.slice(i * CN_CHUNK, (i + 1) * CN_CHUNK));
+    for (let t = 1; ; t++) {
+      try { await call({ action: 'upPart', token, uploadId, index: i, data }); break; }
+      catch (e) {
+        if (e.status === 401 || e.status === 400 || t >= 3) throw new Error(e.status === 401 ? '登录已过期，请重新登录后再上传' : e.message);
+        await new Promise(r => setTimeout(r, 1500 * t));
+      }
+    }
+    onProgress && onProgress((i + 1) / n * 0.95);
+  }
+  const r = await call({ action: 'upDone', token, uploadId, parts: n, path, size: blob.size });
+  onProgress && onProgress(1);
+  return r;
+}
+
 // GitHub 单个请求超过约 60 秒会被拒（并误报 Bad credentials），所以慢网络下要换成可读的提示
 const SLOW_MSG = '上传太慢被 GitHub 中断：这台电脑的网络到 GitHub 速度不够，请先在后台点「上传测速」，或换个网络/用原电脑的脚本上传';
 const ghClient = cfg => async (path, opts = {}) => {

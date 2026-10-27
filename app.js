@@ -99,6 +99,29 @@ function confirmBox(title, text, okText = '确定', danger) {
       (m, close) => { m.querySelector('#ok').onclick = () => { close(); resolve(true); }; m.querySelector('[data-close]').addEventListener('click', () => resolve(false)); });
   });
 }
+// 视频标签：play/posterPlay 是服务端给的当前线路地址（国内签名链接或 GitHub），alt 是另一条线路
+const vtag = v => {
+  const src = v.play || v.src, poster = v.posterPlay !== undefined ? v.posterPlay : v.poster;
+  return `<video src="${esc(src)}" ${poster ? `poster="${esc(poster)}"` : ''} ${v.alt ? `data-alt="${esc(v.alt)}"` : ''} data-vid="${esc(v.id)}" preload="none" controls playsinline></video>`;
+};
+// 当前线路打不开（链接过期、额度用完等）时：先换另一条线路；没有备份就重新要一次链接；都不行才提示
+let refreshVideos = null; // 由当前页面设置：返回最新的视频列表（含播放地址）
+document.addEventListener('error', async e => {
+  const v = e.target;
+  if (!v || v.tagName !== 'VIDEO') return;
+  const replay = src => { v.src = src; v.load(); v.play().catch(() => {}); };
+  if (v.dataset.alt && !v.dataset.altTried) { v.dataset.altTried = '1'; return replay(v.dataset.alt); }
+  if (!v.dataset.refreshed && refreshVideos) {
+    v.dataset.refreshed = '1';
+    try {
+      const fresh = (await refreshVideos()).find(x => x.id === v.dataset.vid);
+      const src = fresh && (fresh.play || fresh.src);
+      if (src) return replay(src);
+    } catch (_) { }
+  }
+  toast('视频加载失败，请检查网络后刷新页面重试', true);
+}, true);
+
 // 同时只播放一个视频
 document.addEventListener('play', e => { document.querySelectorAll('video').forEach(v => { if (v !== e.target) v.pause(); }); }, true);
 
@@ -364,7 +387,9 @@ function loginPage() {
 async function dashboard() {
   const polls = await api('admin.list');
   $app.innerHTML = `<div class="spread" style="margin-bottom:24px"><div><h1>我的投票</h1><p class="muted">共 ${polls.length} 个投票</p></div>
-    <div class="row"><button class="btn" id="speed">📶 上传测速</button><button class="btn primary" id="new">＋ 新建投票</button></div></div>
+    <div class="row"><label class="muted" style="display:flex;align-items:center;gap:6px">视频线路
+      <select class="input" id="line" style="width:auto;padding:6px 10px"><option value="cn">国内（推荐）</option><option value="github">GitHub</option></select></label>
+      <button class="btn" id="speed">📶 上传测速</button><button class="btn primary" id="new">＋ 新建投票</button></div></div>
     ${polls.length ? `<div class="poll-list">${polls.map(p => `
       <div class="card poll-item" data-id="${p.id}">
         <div class="spread">${badge(p.status)}<span class="muted">${fmt(p.createdAt)}</span></div>
@@ -378,6 +403,16 @@ async function dashboard() {
       : `<div class="card empty"><div class="big">🗳️</div><p>还没有投票，点击右上角新建一个吧</p></div>`}`;
   document.getElementById('new').onclick = newPollModal;
   document.getElementById('speed').onclick = speedModal;
+  const lineSel = document.getElementById('line');
+  api('admin.getSettings').then(st => { lineSel.value = st.videoLine; }).catch(() => {});
+  lineSel.onchange = async () => {
+    const to = lineSel.value;
+    const msg = to === 'github'
+      ? '所有投票页将改用 GitHub 播放视频（国内流量快用完时用）。没有 GitHub 备份的视频仍走国内。确定切换吗？'
+      : '所有投票页将改回国内线路播放视频。确定切换吗？';
+    if (!await confirmBox('切换视频线路', msg, '切换')) { lineSel.value = to === 'github' ? 'cn' : 'github'; return; }
+    try { await api('admin.setLine', { line: to }); toast('已切换，投票页约 30 秒内生效'); } catch (e) { toast(e.message, true); }
+  };
   $app.querySelectorAll('.poll-item').forEach(el => el.onclick = () => location.hash = `#/admin/${el.dataset.id}`);
 }
 
@@ -462,6 +497,7 @@ let currentTab = 'setup', lastPollId = null, scope = 'all';
 
 async function pollPage(id) {
   let poll = await api('admin.get', { id });
+  refreshVideos = async () => (await api('admin.get', { id })).videos;
   if (lastPollId !== id) {
     currentTab = poll.status !== 'draft' && poll.ballotCount ? 'results' : 'setup';
     scope = poll.cutoff && Date.now() > Date.parse(poll.cutoff) ? 'cutoff' : 'all';
@@ -574,16 +610,16 @@ async function pollPage(id) {
     }
   };
 
-  // ----- 网页上传：浏览器内压缩 → 一次提交到 GitHub → 挂到投票 -----
+  // ----- 网页上传：浏览器内压缩 → 分段传到国内云存储（传完即可播放）→ 后台备份到 GitHub -----
   let uploading = false, upItems = [];
   const titleOf = name => { const t = name.replace(/\.[^.]+$/, ''); return t.replace(/^\d+[\s._、-]+/, '').trim() || t; };
   const renderUploads = () => {
     const box = document.getElementById('uplist');
     if (!box) return;
     box.innerHTML = upItems.map(u => `<div class="row" style="gap:12px;flex-wrap:nowrap">
-      <span style="flex:0 0 38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.file.name)}">${esc(u.file.name)}</span>
+      <span style="flex:0 0 34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.file.name)}">${esc(u.file.name)}</span>
       <div class="progress" style="flex:1;width:auto"><i style="width:${u.pct}%;${u.error ? 'background:var(--bad)' : ''}"></i></div>
-      <span class="muted" style="flex:0 0 30%;font-size:13px;color:${u.error ? 'var(--bad)' : ''}">${esc(u.status)}</span></div>`).join('');
+      <span class="muted" style="flex:0 0 36%;font-size:13px;color:${u.error ? 'var(--bad)' : ''}">${esc(u.status)}${u.bk ? `<br><span style="color:${u.bkBad ? '#b45309' : 'var(--muted)'}">${esc(u.bk)}</span>` : ''}</span></div>`).join('');
   };
   const setItem = (u, status, pct) => { u.status = status; if (pct != null) u.pct = pct; renderUploads(); };
   const uploadVideos = async picked => {
@@ -597,50 +633,51 @@ async function pollPage(id) {
       if (!up.supported()) throw new Error('这个浏览器不支持网页内压缩视频，请用电脑上最新版的 Chrome 或 Edge');
     } catch (e) { return toast(e.message.includes('uploader') ? '上传组件加载失败，请刷新重试' : e.message, true); }
     let cfg;
-    try { cfg = await api('admin.ghConfig'); } catch (e) { return toast(e.message, true); }
+    try { cfg = await api('admin.uploadConfig'); } catch (e) { return toast(e.message, true); }
 
     uploading = true;
     window.onbeforeunload = () => '视频正在上传，离开会中断';
     upItems = vids.map(file => ({ file, status: '等待压缩', pct: 0 }));
     renderUploads();
     const stamp = Date.now().toString(36);
-    const files = [], added = [];
+    const backupFiles = [], doneItems = [];
     for (const [k, u] of upItems.entries()) {
       try {
         setItem(u, '压缩中 0%', 0);
-        const { blob, noAudio, skipped } = await up.compress(u.file, p => setItem(u, `压缩中 ${Math.round(p * 100)}%`, Math.round(p * 80)));
+        const { blob, noAudio, skipped } = await up.compress(u.file, p => setItem(u, `压缩中 ${Math.round(p * 100)}%`, Math.round(p * 50)));
         if (blob.size > 90 * 1048576) throw new Error('压缩后仍超过 90 MB，请先剪短');
         const cover = await up.poster(blob).catch(() => null);
         const base = `videos/${id}/${stamp}${String(k + 1).padStart(2, '0')}`;
-        files.push({ path: base + '.mp4', blob });
-        if (cover) files.push({ path: base + '.jpg', blob: cover });
-        added.push({ title: titleOf(u.file.name), src: base + '.mp4', poster: cover ? base + '.jpg' : '', size: blob.size, from: poll.title });
-        setItem(u, `${skipped ? '已符合要求，跳过压缩' : '压缩完成'} ${(u.file.size / 1048576).toFixed(0)}→${(blob.size / 1048576).toFixed(1)} MB${noAudio ? '（无声音）' : ''}`, 80);
+        const note = `${skipped ? '已符合要求，跳过压缩' : '压缩完成'} ${(u.file.size / 1048576).toFixed(0)}→${(blob.size / 1048576).toFixed(1)} MB${noAudio ? '（无声音）' : ''}`;
+        setItem(u, note + ' · 上传中 0%', 50);
+        await up.uploadCN(cfg.mediaUrl, auth.token, base + '.mp4', blob, p => setItem(u, `${note} · 上传中 ${Math.round(p * 100)}%`, 50 + Math.round(p * 45)));
+        if (cover) await up.uploadCN(cfg.mediaUrl, auth.token, base + '.jpg', cover).catch(() => null);
+        // 传完一个就挂上一个：别的管理员马上能看到，后面的视频出错也不影响已传好的
+        poll = await api('admin.addVideos', { id, videos: [{ title: titleOf(u.file.name), src: 'cos:' + base + '.mp4', poster: cover ? 'cos:' + base + '.jpg' : '', size: blob.size, from: poll.title }] });
+        renderHead(); renderVideos();
+        setItem(u, '✅ 完成，可以播放了', 100);
+        u.src = 'cos:' + base + '.mp4';
+        backupFiles.push({ path: base + '.mp4', blob });
+        if (cover) backupFiles.push({ path: base + '.jpg', blob: cover });
+        doneItems.push(u);
       } catch (e) { u.error = true; setItem(u, '失败：' + e.message, 100); }
     }
-    const ok = upItems.filter(u => !u.error);
-    try {
-      if (!added.length) throw new Error('没有压缩成功的视频');
-      await up.commitFiles(cfg, files, `网页上传：${poll.title}（${added.length} 个）`, step => ok.forEach(u => setItem(u, step, 90)));
-      poll = await api('admin.addVideos', { id, videos: added });
-      ok.forEach(u => setItem(u, '已上传，等待 GitHub 生效…', 95));
-      renderHead(); renderVideos();
-      // GitHub Pages 构建通常 1–2 分钟，轮询第一个视频确认可访问
-      const probe = added[0].src;
-      let live = /^(localhost|127\.)/.test(location.hostname);
-      for (let t = 0; t < 40 && !live; t++) {
-        const r = await fetch(probe, { method: 'HEAD', cache: 'no-store' }).catch(() => null);
-        if (r && r.ok) live = true; else await new Promise(r => setTimeout(r, 8000));
+    if (doneItems.length) toast(`已上传 ${doneItems.length} 个视频，可以播放了`);
+    // GitHub 备份：国内线路出问题时的兜底；慢或失败都不影响发布和投票
+    if (doneItems.length && cfg.gh) {
+      doneItems.forEach(u => { u.bk = 'GitHub 备份中…（可以继续操作，别关页面）'; });
+      renderUploads();
+      try {
+        await up.commitFiles(cfg.gh, backupFiles, `网页上传备份：${poll.title}（${doneItems.length} 个）`, step => { doneItems.forEach(u => { u.bk = 'GitHub 备份：' + step; }); renderUploads(); });
+        await api('admin.setBackup', { id, srcs: doneItems.map(u => u.src) });
+        doneItems.forEach(u => { u.bk = '已备份到 GitHub'; });
+      } catch (e) {
+        doneItems.forEach(u => { u.bk = 'GitHub 备份未完成（不影响投票）'; u.bkBad = true; });
       }
-      ok.forEach(u => setItem(u, live ? '✅ 完成，可以播放了' : '✅ 已上传；网站还在更新，几分钟后刷新即可播放', 100));
-      toast(`已上传 ${added.length} 个视频`);
-    } catch (e) {
-      ok.forEach(u => { u.error = true; setItem(u, '失败：' + e.message, 100); });
-      toast(e.message, true);
-    } finally {
-      uploading = false;
-      window.onbeforeunload = null;
+      renderUploads();
     }
+    uploading = false;
+    window.onbeforeunload = null;
   };
   const renderVideos = () => {
     const grid = document.getElementById('vgrid');
@@ -649,10 +686,10 @@ async function pollPage(id) {
     document.getElementById('vcount').textContent = `${poll.videos.length} 个`;
     grid.innerHTML = poll.videos.map((v, i) => `
       <div class="card vcard" data-i="${i}">
-        <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
+        ${vtag(v)}
         <div class="meta"><span class="no">V${i + 1}</span><input class="title-input" value="${esc(v.title)}" maxlength="100" title="点击修改标题"></div>
         <div class="wx-row"><span>视频号</span><input class="wx-input" value="${esc(v.wx || '')}" placeholder="粘贴视频号链接（可选）" title="在微信视频号里点「…」→「复制链接」后粘贴到这里"></div>
-        <div class="tools"><span class="muted" style="margin-right:auto;padding-left:4px">${esc(v.from || '')}</span>
+        <div class="tools"><span class="muted" style="margin-right:auto;padding-left:4px">${esc(v.from || '')}${/^cos:/.test(v.src) ? ` <span title="国内线路出问题时，有备份的视频可以切到 GitHub 播放" style="color:${v.backupOk ? 'var(--good)' : '#b45309'}">${v.backupOk ? '· 已备份' : '· 未备份'}</span>` : ''}</span>
           ${!locked ? `<button class="btn ghost sm" data-move="-1" ${i === 0 ? 'disabled' : ''} title="前移">←</button><button class="btn ghost sm" data-move="1" ${i === poll.videos.length - 1 ? 'disabled' : ''} title="后移">→</button><button class="btn ghost sm danger" data-delv>移除</button>` : ''}</div>
       </div>`).join('');
     grid.querySelectorAll('.vcard').forEach(card => {
@@ -708,7 +745,7 @@ async function pollPage(id) {
         m.querySelector('#doImport').onclick = async () => {
           const picked = [...m.querySelectorAll('input[data-vid]:checked')].map(c => {
             const p = polls.find(x => x.id === c.dataset.poll), v = p.videos.find(x => x.id === c.dataset.vid);
-            return { title: v.title, src: v.src, poster: v.poster, wx: v.wx || '', size: v.size, from: p.title };
+            return { title: v.title, src: v.src, poster: v.poster, wx: v.wx || '', size: v.size, from: p.title, backupOk: !!v.backupOk };
           });
           if (!picked.length) return toast('请先勾选视频', true);
           try { poll = await api('admin.addVideos', { id, videos: picked }); close(); toast(`已导入 ${picked.length} 个视频`); renderHead(); renderVideos(); }
@@ -803,6 +840,7 @@ async function votePage(id) {
   try { poll = await api('poll', { id, voter: auth.voter, fp }); }
   catch (e) { $app.innerHTML = `<div class="card empty"><div class="big">🔍</div>${esc(e.message)}</div>`; return; }
   document.title = poll.title;
+  refreshVideos = async () => (await api('poll', { id, voter: auth.voter, fp })).videos;
   const rule = poll.minChoices === poll.maxChoices ? `请选出 <b>${poll.maxChoices}</b> 个你最喜欢的视频` : `请选出 <b>${poll.minChoices}–${poll.maxChoices}</b> 个你最喜欢的视频`;
   const head = BANNER + `<section class="vote-head"><h1>${esc(poll.title)}</h1>${poll.description ? `<p class="sub">${esc(poll.description)}</p>` : ''}
     <div class="row">${poll.status === 'closed' ? '<span class="rule">⏹ 投票已结束</span>'
@@ -819,7 +857,7 @@ async function votePage(id) {
   const ranked = R && R.total ? R.rows.map(r => ({ ...byId.get(r.id), rank: r.rank, votes: r.votes })).filter(v => v.src) : poll.videos;
   const replay = `<h2 style="margin:30px 0 14px">${R && R.total ? '视频回看（按名次）' : '全部视频'}</h2><div class="video-grid">${ranked.map(v => `
     <div class="card vcard">
-      <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
+      ${vtag(v)}
       <div class="meta">${v.rank ? `<span class="no">${v.rank === 1 && v.votes ? '🏆 ' : ''}第 ${v.rank} 名</span>` : ''}<span class="title">${esc(v.title)}</span>${v.rank ? `<span class="muted">${v.votes} 票</span>` : ''}</div>${wxLink(v)}
     </div>`).join('')}</div>`;
 
@@ -836,7 +874,7 @@ async function votePage(id) {
       // 投完票仍可观看全部视频（只是不能再投），自己投的标出来
       + `<h2 style="margin:30px 0 14px">全部视频</h2><div class="video-grid">${poll.videos.map((v, i) => `
     <div class="card vcard${poll.myBallot.choices.includes(v.id) ? ' voted' : ''}">
-      <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
+      ${vtag(v)}
       <div class="meta"><span class="no">${i + 1}</span><span class="title">${esc(v.title)}</span>${poll.myBallot.choices.includes(v.id) ? '<span class="badge open">你投了</span>' : ''}</div>${wxLink(v)}
     </div>`).join('')}</div>`;
     return;
@@ -846,7 +884,7 @@ async function votePage(id) {
   const seen = poll.deviceSeen ? '<div class="notice" style="margin-bottom:20px">⚠️ 检测到这台设备在本投票中已有投票记录。每人限投一次，重复投票会被标记，组织者可能将其作废。如果是和别人共用设备，可以忽略本提示。</div>' : '';
   $app.innerHTML = head + seen + `<div class="video-grid">${poll.videos.map((v, i) => `
     <div class="card vcard selectable" data-id="${v.id}">
-      <video src="${esc(v.src)}" ${v.poster ? `poster="${esc(v.poster)}"` : ''} preload="none" controls playsinline></video>
+      ${vtag(v)}
       <div class="meta"><span class="no">${i + 1}</span><span class="title">${esc(v.title)}</span></div>${wxLink(v)}
       <button class="btn select-btn">选择这个</button>
     </div>`).join('')}</div>${results}
