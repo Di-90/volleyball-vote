@@ -109,7 +109,13 @@ let refreshVideos = null; // 由当前页面设置：返回最新的视频列表
 document.addEventListener('error', async e => {
   const v = e.target;
   if (!v || v.tagName !== 'VIDEO') return;
-  const replay = src => { v.src = src; v.load(); v.play().catch(() => {}); };
+  // 换链接后从刚才的位置接着播（链接约 10 分钟失效，看到一半过期也不用从头看）
+  const replay = src => {
+    const at = v.currentTime || 0;
+    v.src = src; v.load();
+    if (at > 1) v.addEventListener('loadedmetadata', () => { v.currentTime = at; }, { once: true });
+    v.play().catch(() => {});
+  };
   if (!v.dataset.refreshed && refreshVideos) {
     v.dataset.refreshed = '1';
     try {
