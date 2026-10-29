@@ -110,15 +110,16 @@ document.addEventListener('error', async e => {
   const v = e.target;
   if (!v || v.tagName !== 'VIDEO') return;
   const replay = src => { v.src = src; v.load(); v.play().catch(() => {}); };
-  if (v.dataset.alt && !v.dataset.altTried) { v.dataset.altTried = '1'; return replay(v.dataset.alt); }
   if (!v.dataset.refreshed && refreshVideos) {
     v.dataset.refreshed = '1';
     try {
       const fresh = (await refreshVideos()).find(x => x.id === v.dataset.vid);
       const src = fresh && (fresh.play || fresh.src);
+      if (fresh && fresh.alt) v.dataset.alt = fresh.alt;
       if (src) return replay(src);
     } catch (_) { }
   }
+  if (v.dataset.alt && !v.dataset.altTried) { v.dataset.altTried = '1'; return replay(v.dataset.alt); }
   toast('视频加载失败，请检查网络后刷新页面重试', true);
 }, true);
 
@@ -497,7 +498,7 @@ let currentTab = 'setup', lastPollId = null, scope = 'all';
 
 async function pollPage(id) {
   let poll = await api('admin.get', { id });
-  refreshVideos = async () => (await api('admin.get', { id })).videos;
+  refreshVideos = async () => (await api('admin.get', { id, fresh: true })).videos;
   if (lastPollId !== id) {
     currentTab = poll.status !== 'draft' && poll.ballotCount ? 'results' : 'setup';
     scope = poll.cutoff && Date.now() > Date.parse(poll.cutoff) ? 'cutoff' : 'all';
@@ -840,7 +841,7 @@ async function votePage(id) {
   try { poll = await api('poll', { id, voter: auth.voter, fp }); }
   catch (e) { $app.innerHTML = `<div class="card empty"><div class="big">🔍</div>${esc(e.message)}</div>`; return; }
   document.title = poll.title;
-  refreshVideos = async () => (await api('poll', { id, voter: auth.voter, fp })).videos;
+  refreshVideos = async () => (await api('poll', { id, voter: auth.voter, fp, fresh: true })).videos;
   const rule = poll.minChoices === poll.maxChoices ? `请选出 <b>${poll.maxChoices}</b> 个你最喜欢的视频` : `请选出 <b>${poll.minChoices}–${poll.maxChoices}</b> 个你最喜欢的视频`;
   const head = BANNER + `<section class="vote-head"><h1>${esc(poll.title)}</h1>${poll.description ? `<p class="sub">${esc(poll.description)}</p>` : ''}
     <div class="row">${poll.status === 'closed' ? '<span class="rule">⏹ 投票已结束</span>'
